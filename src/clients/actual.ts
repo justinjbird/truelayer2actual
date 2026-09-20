@@ -125,9 +125,13 @@ export async function importToActual(
   const result = await (api as unknown as {
     importTransactions: (
       accountId: string,
-      transactions: ActualTransaction[]
+      transactions: ActualTransaction[],
+      opts?: { reimportDeleted?: boolean }
     ) => Promise<ImportResult>;
-  }).importTransactions(accountId, transactions);
+    // Actual defaults reimportDeleted to true, which matches incoming ids against
+    // live rows only — so anything deleted by hand in Actual is re-added on the
+    // next sync. False matches against deleted rows too, and a deletion sticks.
+  }).importTransactions(accountId, transactions, { reimportDeleted: false });
 
   return result;
 }

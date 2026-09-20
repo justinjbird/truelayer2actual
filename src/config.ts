@@ -11,6 +11,9 @@ const AccountSchema = z.object({
   actualAccountId: z.string(),
   currency: z.string().default('GBP'),
   lastSyncedAt: z.string().optional(),
+  // Set by setup for an account that already holds history (e.g. migrated from
+  // another tool). The next sync starts here exactly, then clears it.
+  backfillFrom: z.string().optional(),
 });
 
 const ConfigSchema = z.object({

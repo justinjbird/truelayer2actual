@@ -19,6 +19,7 @@ import {
   initActual,
   shutdownActual,
   getActualAccounts,
+  getActualTransactions,
   type ActualAccount,
 } from '../clients/actual.js';
 import { loadConfig, saveConfig, type Config, type Account } from '../config.js';
@@ -50,9 +51,11 @@ function buildAuthUrl(clientId: string, redirectUri: string, sandbox: boolean): 
     client_id: clientId,
     scope: 'accounts balance transactions cards offline_access',
     redirect_uri: redirectUri,
-    providers: 'uk-cs-mock uk-ob-all uk-oauth-all',
     prompt: 'consent',
   });
+  // Sandbox exposes only the Mock Bank provider; the live provider groups are not
+  // valid there, and mixing them in invalidates the whole filter.
+  params.set('providers', sandbox ? 'uk-cs-mock' : 'uk-ob-all uk-oauth-all');
   return `${base}/?${params.toString()}`;
 }
 
@@ -64,6 +67,10 @@ function tokenUrl(sandbox: boolean): string {
 
 function tryOpenBrowser(url: string): void {
   execFile('open', [url], () => { /* ignore errors */ });
+}
+
+function today(): string {
+  return new Date().toISOString().split('T')[0];
 }
 
 function prompt(rl: readline.Interface, question: string): Promise<string> {
@@ -202,6 +209,79 @@ async function pickActualAccount(
 }
 
 // ---------------------------------------------------------------------------
+// Backfill watermark: where should the first sync of a new account start?
+// ---------------------------------------------------------------------------
+
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Latest transaction date already sitting in an Actual account, or null if the
+ * account is empty. Assumes an open Actual session.
+ */
+async function latestActualTransactionDate(actualAccountId: string): Promise<string | null> {
+  const txns = await getActualTransactions(actualAccountId, '1970-01-01', today());
+  if (txns.length === 0) return null;
+  return txns.reduce((latest, t) => (t.date > latest ? t.date : latest), txns[0].date);
+}
+
+/**
+ * For each newly paired account, work out where its first sync should start.
+ * Accounts migrated from another tool already hold history, so the generic
+ * lookback would leave a gap; the newest transaction in Actual is the honest
+ * starting point. The user can override or decline per account.
+ */
+async function seedBackfillDates(rl: readline.Interface, accounts: Account[]): Promise<void> {
+  console.log('\n===========================================================');
+  console.log('First Sync Start Dates');
+  console.log('===========================================================');
+  console.log('For accounts that already hold history (migrated from another tool),');
+  console.log('the first sync starts at the newest transaction found in Actual.\n');
+
+  await initActual();
+  try {
+    for (const account of accounts) {
+      let suggested: string | null;
+      try {
+        suggested = await latestActualTransactionDate(account.actualAccountId);
+      } catch (err) {
+        logger.warn(
+          `[${account.name}] Could not read existing transactions from Actual:`,
+          err instanceof Error ? err.message : String(err)
+        );
+        continue;
+      }
+
+      if (!suggested) {
+        console.log(`  ${account.name}: no existing transactions — will use SYNC_DAYS_LOOKBACK`);
+        continue;
+      }
+
+      while (true) {
+        const answer = await prompt(
+          rl,
+          `  ${account.name}: start first sync from ${suggested} [Enter to accept / YYYY-MM-DD / n for lookback]: `
+        );
+        if (answer === '') {
+          account.backfillFrom = suggested;
+          break;
+        }
+        if (answer.toLowerCase() === 'n') {
+          logger.info(`[${account.name}] Using SYNC_DAYS_LOOKBACK for the first sync`);
+          break;
+        }
+        if (DATE_PATTERN.test(answer) && !isNaN(Date.parse(answer))) {
+          account.backfillFrom = answer;
+          break;
+        }
+        console.log('    Invalid. Press Enter to accept, type YYYY-MM-DD, or "n".');
+      }
+    }
+  } finally {
+    await shutdownActual();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main setup flow
 // ---------------------------------------------------------------------------
 
@@ -328,12 +408,14 @@ async function main(): Promise<void> {
     }
   }
 
-  rl.close();
-
   if (pairedAccounts.length === 0) {
+    rl.close();
     logger.warn('No accounts were paired. Exiting without saving config.');
     process.exit(0);
   }
+
+  await seedBackfillDates(rl, pairedAccounts);
+  rl.close();
 
   // Load existing config to preserve lastSyncedAt for re-authenticated accounts
   let existingConfig: Config | null = null;
@@ -373,7 +455,9 @@ async function main(): Promise<void> {
   console.log('Setup complete!');
   console.log('===========================================================');
   console.log(`\nPaired ${pairedAccounts.length} new/updated account(s):`);
-  pairedAccounts.forEach((a) => console.log(`  - ${a.name}`));
+  pairedAccounts.forEach((a) =>
+    console.log(`  - ${a.name}${a.backfillFrom ? ` (first sync from ${a.backfillFrom})` : ''}`)
+  );
   console.log('\nNext steps:');
   console.log('  npm run sync              # sync now');
   console.log('  npm run setup             # add more banks anytime\n');

@@ -4,3 +4,6 @@ dist/
 data/*
 !data/.gitkeep
 *.js.map
+
+# Local YNAB exports and other personal data
+ynab/
