@@ -1,9 +1,9 @@
 services:
-  truelayer2actual:
+  truelayer:
     image: yourname/actualsync:latest
-    container_name: truelayer2actual
+    container_name: truelayer
     volumes:
-      - /volume1/docker/truelayer2actual/data:/app/data
+      - /volume1/docker/truelayer/data:/app/data
     environment:
       - TRUELAYER_CLIENT_ID=${TRUELAYER_CLIENT_ID}
       - TRUELAYER_CLIENT_SECRET=${TRUELAYER_CLIENT_SECRET}

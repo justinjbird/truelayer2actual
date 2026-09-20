@@ -1,4 +1,4 @@
-# truelayer2actual
+# truelayer
 
 Syncs UK bank transactions from [TrueLayer](https://truelayer.com) into a self-hosted [Actual Budget](https://actualbudget.org) instance.
 
@@ -56,8 +56,8 @@ Import the history into Actual first, then:
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/jasmucrai/truelayer2actual.git
-cd truelayer2actual
+git clone https://github.com/jasmucrai/truelayer.git
+cd truelayer
 npm install
 ```
 
@@ -135,21 +135,21 @@ Two things worth knowing before the first sync:
 ### Build and run setup
 
 ```bash
-docker build -t truelayer2actual .
+docker build -t truelayer .
 docker run --rm -it \
   -p 3000:3000 \
   -v /path/to/data:/app/data \
   --env-file .env \
-  truelayer2actual node dist/commands/setup.js
+  truelayer node dist/commands/setup.js
 ```
 
 ### docker-compose.yml
 
 ```yaml
 services:
-  truelayer2actual:
-    image: truelayer2actual:latest
-    container_name: truelayer2actual
+  truelayer:
+    image: truelayer:latest
+    container_name: truelayer
     volumes:
       - /path/to/data:/app/data
     env_file: .env
@@ -159,7 +159,7 @@ services:
 Run a sync:
 
 ```bash
-docker compose run --rm truelayer2actual
+docker compose run --rm truelayer
 ```
 
 ## Scheduling
@@ -178,8 +178,8 @@ The container starts, syncs once, and exits. Scheduling is handled externally â€
 4. Script:
 
    ```bash
-   docker compose -f /volume1/docker/truelayer2actual/docker-compose.yml \
-     run --rm truelayer2actual
+   docker compose -f /volume1/docker/truelayer/docker-compose.yml \
+     run --rm truelayer
    ```
 
 5. Enable **"Send run details by email"** and **"Send only when script terminates abnormally"**
@@ -190,11 +190,11 @@ Set `SYNC_INTERVAL_HOURS` to a positive number and the container runs continuous
 
 ```yaml
 services:
-  truelayer2actual:
-    image: truelayer2actual:latest
-    container_name: truelayer2actual
+  truelayer:
+    image: truelayer:latest
+    container_name: truelayer
     volumes:
-      - /volume1/docker/truelayer2actual/data:/app/data
+      - /volume1/docker/truelayer/data:/app/data
     env_file: .env
     restart: unless-stopped
 ```

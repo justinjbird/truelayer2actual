@@ -1,5 +1,5 @@
 {
-  "name": "truelayer2actual",
+  "name": "truelayer",
   "type": "module",
   "version": "1.0.0",
   "description": "Sync TrueLayer bank transactions to Actual Budget",

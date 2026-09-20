@@ -1,29 +1,34 @@
-import 'dotenv/config';
-import readline from 'readline';
-import { execFile } from 'child_process';
-import axios from 'axios';
-import { startAuthServer } from '../auth/server.js';
+import "dotenv/config";
+import readline from "readline";
+import { execFile } from "child_process";
+import axios from "axios";
+import { startAuthServer } from "../auth/server.js";
 import {
   generateConnectionId,
   saveConnection,
   removeStaleConnections,
   type Tokens,
-} from '../auth/tokens.js';
+} from "../auth/tokens.js";
 import {
   fetchAccounts,
   fetchCards,
   type TrueLayerAccount,
   type TrueLayerCard,
-} from '../clients/truelayer.js';
+} from "../clients/truelayer.js";
 import {
   initActual,
   shutdownActual,
   getActualAccounts,
   getActualTransactions,
   type ActualAccount,
-} from '../clients/actual.js';
-import { loadConfig, saveConfig, type Config, type Account } from '../config.js';
-import { logger } from '../logger.js';
+} from "../clients/actual.js";
+import {
+  loadConfig,
+  saveConfig,
+  type Config,
+  type Account,
+} from "../config.js";
+import { logger } from "../logger.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -34,43 +39,51 @@ function requireEnv(name: string): string {
   if (!value) {
     throw new Error(
       `Missing required environment variable: ${name}. ` +
-        'Please copy .env.example to .env and fill in the values.'
+        "Please copy .env.example to .env and fill in the values.",
     );
   }
   return value;
 }
 
 function isSandbox(clientId: string): boolean {
-  return clientId.startsWith('sandbox-');
+  return clientId.startsWith("sandbox-");
 }
 
-function buildAuthUrl(clientId: string, redirectUri: string, sandbox: boolean): string {
-  const base = sandbox ? 'https://auth.truelayer-sandbox.com' : 'https://auth.truelayer.com';
+function buildAuthUrl(
+  clientId: string,
+  redirectUri: string,
+  sandbox: boolean,
+): string {
+  const base = sandbox
+    ? "https://auth.truelayer-sandbox.com"
+    : "https://auth.truelayer.com";
   const params = new URLSearchParams({
-    response_type: 'code',
+    response_type: "code",
     client_id: clientId,
-    scope: 'accounts balance transactions cards offline_access',
+    scope: "accounts balance transactions cards offline_access",
     redirect_uri: redirectUri,
-    prompt: 'consent',
+    prompt: "consent",
   });
   // Sandbox exposes only the Mock Bank provider; the live provider groups are not
   // valid there, and mixing them in invalidates the whole filter.
-  params.set('providers', sandbox ? 'uk-cs-mock' : 'uk-ob-all uk-oauth-all');
+  params.set("providers", sandbox ? "uk-cs-mock" : "uk-ob-all uk-oauth-all");
   return `${base}/?${params.toString()}`;
 }
 
 function tokenUrl(sandbox: boolean): string {
   return sandbox
-    ? 'https://auth.truelayer-sandbox.com/connect/token'
-    : 'https://auth.truelayer.com/connect/token';
+    ? "https://auth.truelayer-sandbox.com/connect/token"
+    : "https://auth.truelayer.com/connect/token";
 }
 
 function tryOpenBrowser(url: string): void {
-  execFile('open', [url], () => { /* ignore errors */ });
+  execFile("open", [url], () => {
+    /* ignore errors */
+  });
 }
 
 function today(): string {
-  return new Date().toISOString().split('T')[0];
+  return new Date().toISOString().split("T")[0];
 }
 
 function prompt(rl: readline.Interface, question: string): Promise<string> {
@@ -89,37 +102,47 @@ async function authenticateBank(
   redirectUri: string,
   port: number,
   sandbox: boolean,
-  bankNumber: number
-): Promise<{ connectionId: string; tlAccounts: TrueLayerAccount[]; tlCards: TrueLayerCard[] }> {
+  bankNumber: number,
+): Promise<{
+  connectionId: string;
+  tlAccounts: TrueLayerAccount[];
+  tlCards: TrueLayerCard[];
+}> {
   const { server, waitForCode } = await startAuthServer(port);
 
   const authUrl = buildAuthUrl(clientId, redirectUri, sandbox);
 
-  console.log('\n===========================================================');
+  console.log("\n===========================================================");
   console.log(`Bank ${bankNumber}: Open this URL to authenticate:`);
-  console.log('\n' + authUrl + '\n');
-  console.log('===========================================================\n');
+  console.log("\n" + authUrl + "\n");
+  console.log("===========================================================\n");
 
   tryOpenBrowser(authUrl);
-  logger.info('Waiting for OAuth callback...');
+  logger.info("Waiting for OAuth callback...");
 
   let code: string;
   try {
     code = await waitForCode();
   } catch (err) {
     server.close();
-    throw new Error(`OAuth flow failed: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(
+      `OAuth flow failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 
   server.close();
 
   // Exchange code for tokens
-  logger.info('Exchanging authorization code for tokens...');
-  let tokenData: { access_token: string; refresh_token: string; expires_in: number };
+  logger.info("Exchanging authorization code for tokens...");
+  let tokenData: {
+    access_token: string;
+    refresh_token: string;
+    expires_in: number;
+  };
 
   try {
     const params = new URLSearchParams({
-      grant_type: 'authorization_code',
+      grant_type: "authorization_code",
       client_id: clientId,
       client_secret: clientSecret,
       redirect_uri: redirectUri,
@@ -128,13 +151,13 @@ async function authenticateBank(
     const res = await axios.post<typeof tokenData>(
       tokenUrl(sandbox),
       params.toString(),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" } },
     );
     tokenData = res.data;
   } catch (err) {
     if (axios.isAxiosError(err)) {
       throw new Error(
-        `Token exchange failed: ${err.response?.status ?? 'unknown'} — ${JSON.stringify(err.response?.data)}`
+        `Token exchange failed: ${err.response?.status ?? "unknown"} — ${JSON.stringify(err.response?.data)}`,
       );
     }
     throw err;
@@ -150,12 +173,14 @@ async function authenticateBank(
   saveConnection(connectionId, tokens);
   logger.info(`Tokens saved (connection: ${connectionId})`);
 
-  logger.info('Fetching accounts and cards from TrueLayer...');
+  logger.info("Fetching accounts and cards from TrueLayer...");
   const [tlAccounts, tlCards] = await Promise.all([
     fetchAccounts(tokenData.access_token),
     fetchCards(tokenData.access_token),
   ]);
-  logger.info(`Found ${tlAccounts.length} account(s) and ${tlCards.length} card(s)`);
+  logger.info(
+    `Found ${tlAccounts.length} account(s) and ${tlCards.length} card(s)`,
+  );
 
   return { connectionId, tlAccounts, tlCards };
 }
@@ -174,28 +199,31 @@ async function fetchActualAccounts(): Promise<ActualAccount[]> {
 async function pickActualAccount(
   rl: readline.Interface,
   actualAccounts: ActualAccount[],
-  label: string
+  label: string,
 ): Promise<{ account: ActualAccount | null; actualAccounts: ActualAccount[] }> {
   let accounts = actualAccounts;
 
   function printAccounts(): void {
     console.log(`\n${label}`);
-    console.log('Actual accounts:');
+    console.log("Actual accounts:");
     accounts.forEach((a, i) => {
-      console.log(`  ${i + 1}. ${a.name}${a.offbudget ? ' (off-budget)' : ''}`);
+      console.log(`  ${i + 1}. ${a.name}${a.offbudget ? " (off-budget)" : ""}`);
     });
   }
 
   printAccounts();
 
   while (true) {
-    const answer = await prompt(rl, `Select [1-${accounts.length} / s to skip / r to refresh]: `);
-    if (answer.toLowerCase() === 's') {
+    const answer = await prompt(
+      rl,
+      `Select [1-${accounts.length} / s to skip / r to refresh]: `,
+    );
+    if (answer.toLowerCase() === "s") {
       logger.info(`Skipped: ${label}`);
       return { account: null, actualAccounts: accounts };
     }
-    if (answer.toLowerCase() === 'r') {
-      logger.info('Refreshing Actual accounts...');
+    if (answer.toLowerCase() === "r") {
+      logger.info("Refreshing Actual accounts...");
       accounts = await fetchActualAccounts();
       printAccounts();
       continue;
@@ -204,7 +232,9 @@ async function pickActualAccount(
     if (!isNaN(num) && num >= 1 && num <= accounts.length) {
       return { account: accounts[num - 1], actualAccounts: accounts };
     }
-    console.log(`Invalid. Enter 1–${accounts.length}, "s" to skip, or "r" to refresh.`);
+    console.log(
+      `Invalid. Enter 1–${accounts.length}, "s" to skip, or "r" to refresh.`,
+    );
   }
 }
 
@@ -218,10 +248,19 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
  * Latest transaction date already sitting in an Actual account, or null if the
  * account is empty. Assumes an open Actual session.
  */
-async function latestActualTransactionDate(actualAccountId: string): Promise<string | null> {
-  const txns = await getActualTransactions(actualAccountId, '1970-01-01', today());
+async function latestActualTransactionDate(
+  actualAccountId: string,
+): Promise<string | null> {
+  const txns = await getActualTransactions(
+    actualAccountId,
+    "1970-01-01",
+    today(),
+  );
   if (txns.length === 0) return null;
-  return txns.reduce((latest, t) => (t.date > latest ? t.date : latest), txns[0].date);
+  return txns.reduce(
+    (latest, t) => (t.date > latest ? t.date : latest),
+    txns[0].date,
+  );
 }
 
 /**
@@ -230,12 +269,19 @@ async function latestActualTransactionDate(actualAccountId: string): Promise<str
  * lookback would leave a gap; the newest transaction in Actual is the honest
  * starting point. The user can override or decline per account.
  */
-async function seedBackfillDates(rl: readline.Interface, accounts: Account[]): Promise<void> {
-  console.log('\n===========================================================');
-  console.log('First Sync Start Dates');
-  console.log('===========================================================');
-  console.log('For accounts that already hold history (migrated from another tool),');
-  console.log('the first sync starts at the newest transaction found in Actual.\n');
+async function seedBackfillDates(
+  rl: readline.Interface,
+  accounts: Account[],
+): Promise<void> {
+  console.log("\n===========================================================");
+  console.log("First Sync Start Dates");
+  console.log("===========================================================");
+  console.log(
+    "For accounts that already hold history (migrated from another tool),",
+  );
+  console.log(
+    "the first sync starts at the newest transaction found in Actual.\n",
+  );
 
   await initActual();
   try {
@@ -246,34 +292,40 @@ async function seedBackfillDates(rl: readline.Interface, accounts: Account[]): P
       } catch (err) {
         logger.warn(
           `[${account.name}] Could not read existing transactions from Actual:`,
-          err instanceof Error ? err.message : String(err)
+          err instanceof Error ? err.message : String(err),
         );
         continue;
       }
 
       if (!suggested) {
-        console.log(`  ${account.name}: no existing transactions — will use SYNC_DAYS_LOOKBACK`);
+        console.log(
+          `  ${account.name}: no existing transactions — will use SYNC_DAYS_LOOKBACK`,
+        );
         continue;
       }
 
       while (true) {
         const answer = await prompt(
           rl,
-          `  ${account.name}: start first sync from ${suggested} [Enter to accept / YYYY-MM-DD / n for lookback]: `
+          `  ${account.name}: start first sync from ${suggested} [Enter to accept / YYYY-MM-DD / n for lookback]: `,
         );
-        if (answer === '') {
+        if (answer === "") {
           account.backfillFrom = suggested;
           break;
         }
-        if (answer.toLowerCase() === 'n') {
-          logger.info(`[${account.name}] Using SYNC_DAYS_LOOKBACK for the first sync`);
+        if (answer.toLowerCase() === "n") {
+          logger.info(
+            `[${account.name}] Using SYNC_DAYS_LOOKBACK for the first sync`,
+          );
           break;
         }
         if (DATE_PATTERN.test(answer) && !isNaN(Date.parse(answer))) {
           account.backfillFrom = answer;
           break;
         }
-        console.log('    Invalid. Press Enter to accept, type YYYY-MM-DD, or "n".');
+        console.log(
+          '    Invalid. Press Enter to accept, type YYYY-MM-DD, or "n".',
+        );
       }
     }
   } finally {
@@ -286,19 +338,19 @@ async function seedBackfillDates(rl: readline.Interface, accounts: Account[]): P
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
-  logger.info('Starting truelayer2actual setup...');
+  logger.info("Starting truelayer setup...");
 
-  const clientId = requireEnv('TRUELAYER_CLIENT_ID');
-  const clientSecret = requireEnv('TRUELAYER_CLIENT_SECRET');
-  const redirectUri = requireEnv('TRUELAYER_REDIRECT_URI');
-  requireEnv('ACTUAL_SERVER_URL');
-  requireEnv('ACTUAL_PASSWORD');
-  requireEnv('ACTUAL_SYNC_ID');
+  const clientId = requireEnv("TRUELAYER_CLIENT_ID");
+  const clientSecret = requireEnv("TRUELAYER_CLIENT_SECRET");
+  const redirectUri = requireEnv("TRUELAYER_REDIRECT_URI");
+  requireEnv("ACTUAL_SERVER_URL");
+  requireEnv("ACTUAL_PASSWORD");
+  requireEnv("ACTUAL_SYNC_ID");
 
-  const port = parseInt(process.env.SETUP_PORT ?? '3000', 10);
+  const port = parseInt(process.env.SETUP_PORT ?? "3000", 10);
   const sandbox = isSandbox(clientId);
 
-  logger.info(`Using TrueLayer ${sandbox ? 'SANDBOX' : 'LIVE'} environment`);
+  logger.info(`Using TrueLayer ${sandbox ? "SANDBOX" : "LIVE"} environment`);
 
   // Collect connections from one or more banks
   const allConnections: Array<{
@@ -307,7 +359,10 @@ async function main(): Promise<void> {
     tlCards: TrueLayerCard[];
   }> = [];
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
 
   let bankNumber = 1;
   // eslint-disable-next-line no-constant-condition
@@ -318,35 +373,35 @@ async function main(): Promise<void> {
       redirectUri,
       port,
       sandbox,
-      bankNumber
+      bankNumber,
     );
 
     if (tlAccounts.length === 0 && tlCards.length === 0) {
-      logger.warn('No accounts or cards returned for this bank — skipping.');
+      logger.warn("No accounts or cards returned for this bank — skipping.");
     } else {
       allConnections.push({ connectionId, tlAccounts, tlCards });
     }
 
     bankNumber++;
 
-    const another = await prompt(rl, '\nAdd another bank? [y/N]: ');
-    if (another.toLowerCase() !== 'y') break;
+    const another = await prompt(rl, "\nAdd another bank? [y/N]: ");
+    if (another.toLowerCase() !== "y") break;
   }
 
   if (allConnections.length === 0) {
-    logger.warn('No bank connections established. Exiting.');
+    logger.warn("No bank connections established. Exiting.");
     rl.close();
     process.exit(0);
   }
 
   // Connect to Actual and get accounts for pairing
-  logger.info('Connecting to Actual Budget...');
+  logger.info("Connecting to Actual Budget...");
   const actualAccounts = await fetchActualAccounts();
 
   if (actualAccounts.length === 0) {
     logger.error(
-      'No open accounts found in Actual Budget. ' +
-        'Please create accounts in Actual first, then re-run setup.'
+      "No open accounts found in Actual Budget. " +
+        "Please create accounts in Actual first, then re-run setup.",
     );
     rl.close();
     process.exit(1);
@@ -357,28 +412,31 @@ async function main(): Promise<void> {
   // Interactive pairing across all connections
   const pairedAccounts: Account[] = [];
 
-  console.log('\n===========================================================');
-  console.log('Account Pairing');
-  console.log('===========================================================');
-  console.log('For each bank account, choose the matching Actual account.');
-  console.log('Enter the number, "s" to skip, or "r" to refresh the Actual account list.\n');
+  console.log("\n===========================================================");
+  console.log("Account Pairing");
+  console.log("===========================================================");
+  console.log("For each bank account, choose the matching Actual account.");
+  console.log(
+    'Enter the number, "s" to skip, or "r" to refresh the Actual account list.\n',
+  );
 
   let currentActualAccounts = actualAccounts;
 
   for (const { connectionId, tlAccounts, tlCards } of allConnections) {
     // Pair bank accounts
     for (const tlAccount of tlAccounts) {
-      const { account: picked, actualAccounts: refreshed } = await pickActualAccount(
-        rl,
-        currentActualAccounts,
-        `${tlAccount.provider.display_name} — ${tlAccount.display_name} (${tlAccount.account_type}) [${tlAccount.currency}]`
-      );
+      const { account: picked, actualAccounts: refreshed } =
+        await pickActualAccount(
+          rl,
+          currentActualAccounts,
+          `${tlAccount.provider.display_name} — ${tlAccount.display_name} (${tlAccount.account_type}) [${tlAccount.currency}]`,
+        );
       currentActualAccounts = refreshed;
       if (picked) {
         pairedAccounts.push({
           name: tlAccount.display_name,
           connectionId,
-          accountKind: 'account' as const,
+          accountKind: "account" as const,
           truelayerAccountId: tlAccount.account_id,
           actualAccountId: picked.id,
           currency: tlAccount.currency,
@@ -389,16 +447,20 @@ async function main(): Promise<void> {
 
     // Pair cards
     for (const tlCard of tlCards) {
-      const label = `${tlCard.provider.display_name} — ${tlCard.display_name}` +
-        (tlCard.partial_card_number ? ` (****${tlCard.partial_card_number})` : '') +
+      const label =
+        `${tlCard.provider.display_name} — ${tlCard.display_name}` +
+        (tlCard.partial_card_number
+          ? ` (****${tlCard.partial_card_number})`
+          : "") +
         ` [${tlCard.card_type}] [${tlCard.currency}]`;
-      const { account: picked, actualAccounts: refreshed } = await pickActualAccount(rl, currentActualAccounts, label);
+      const { account: picked, actualAccounts: refreshed } =
+        await pickActualAccount(rl, currentActualAccounts, label);
       currentActualAccounts = refreshed;
       if (picked) {
         pairedAccounts.push({
           name: tlCard.display_name,
           connectionId,
-          accountKind: 'card' as const,
+          accountKind: "card" as const,
           truelayerAccountId: tlCard.account_id,
           actualAccountId: picked.id,
           currency: tlCard.currency,
@@ -410,7 +472,7 @@ async function main(): Promise<void> {
 
   if (pairedAccounts.length === 0) {
     rl.close();
-    logger.warn('No accounts were paired. Exiting without saving config.');
+    logger.warn("No accounts were paired. Exiting without saving config.");
     process.exit(0);
   }
 
@@ -430,7 +492,7 @@ async function main(): Promise<void> {
   const mergedAccounts: Account[] = [...existingAccounts];
   for (const account of pairedAccounts) {
     const idx = mergedAccounts.findIndex(
-      (a) => a.truelayerAccountId === account.truelayerAccountId
+      (a) => a.truelayerAccountId === account.truelayerAccountId,
     );
     if (idx !== -1) {
       // Re-authenticated: update connection/pairing but preserve lastSyncedAt
@@ -448,22 +510,29 @@ async function main(): Promise<void> {
   logger.info(`Config saved (${mergedAccounts.length} account(s))`);
 
   // Remove token connections that are no longer referenced
-  const activeConnectionIds = new Set(mergedAccounts.map((a) => a.connectionId));
+  const activeConnectionIds = new Set(
+    mergedAccounts.map((a) => a.connectionId),
+  );
   removeStaleConnections(activeConnectionIds);
 
-  console.log('\n===========================================================');
-  console.log('Setup complete!');
-  console.log('===========================================================');
+  console.log("\n===========================================================");
+  console.log("Setup complete!");
+  console.log("===========================================================");
   console.log(`\nPaired ${pairedAccounts.length} new/updated account(s):`);
   pairedAccounts.forEach((a) =>
-    console.log(`  - ${a.name}${a.backfillFrom ? ` (first sync from ${a.backfillFrom})` : ''}`)
+    console.log(
+      `  - ${a.name}${a.backfillFrom ? ` (first sync from ${a.backfillFrom})` : ""}`,
+    ),
   );
-  console.log('\nNext steps:');
-  console.log('  npm run sync              # sync now');
-  console.log('  npm run setup             # add more banks anytime\n');
+  console.log("\nNext steps:");
+  console.log("  npm run sync              # sync now");
+  console.log("  npm run setup             # add more banks anytime\n");
 }
 
 main().catch((err) => {
-  logger.error('Setup failed:', err instanceof Error ? err.message : String(err));
+  logger.error(
+    "Setup failed:",
+    err instanceof Error ? err.message : String(err),
+  );
   process.exit(1);
 });
