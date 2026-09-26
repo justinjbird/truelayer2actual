@@ -4,6 +4,17 @@ Syncs UK bank transactions from [TrueLayer](https://truelayer.com) into a self-h
 
 Runs as a Docker container. Supports one-shot mode (triggered by external cron) or a built-in loop for continuous syncing.
 
+## Cribsheets
+
+### Pin a new account to history already in Actual
+
+Import the history into Actual first, then:
+
+- `just add` - authenticate the bank, pick the matching Actual account, `s` to skip the rest
+- At `First Sync Start Dates`, Enter to accept the offered date (or type `YYYY-MM-DD`)
+- `cat data/config.json` - confirm `backfillFrom` on the new entry
+- `just refresh` - first sync, starts at `backfillFrom` and clears it
+
 ## How it works
 
 1. **One-time setup** (`npm run setup`) — OAuth flow with TrueLayer, interactive pairing of bank accounts to Actual accounts, saves `data/config.json` and `data/tokens.json`.
@@ -75,12 +86,13 @@ ACTUAL_ENCRYPTION_PASSWORD=         # optional — only if E2E encryption is ena
 # NODE_TLS_REJECT_UNAUTHORIZED=0
 
 # Sync behaviour
-SYNC_DAYS_LOOKBACK=7      # how many days back to fetch on first run
+SYNC_DAYS_LOOKBACK=7      # minimum days re-fetched on every sync
 SYNC_INTERVAL_HOURS=0     # 0 = one-shot (use external cron); >0 = built-in loop
 SETUP_PORT=3000
 ```
 
 > **Important:** `@actual-app/api` must match your Actual server version. If you get an `out-of-sync-migrations` error, run:
+>
 > ```bash
 > npm install @actual-app/api@<your-server-version>
 > ```
@@ -99,7 +111,24 @@ This opens a browser for TrueLayer OAuth, then prompts you to map each bank acco
 npm run sync
 ```
 
-On first run it fetches the last `SYNC_DAYS_LOOKBACK` days. Subsequent runs use the last sync timestamp as the start date.
+Every run takes the **earlier** of the last sync timestamp and `SYNC_DAYS_LOOKBACK` days ago, so recently-settled transactions that were pending last time are always re-fetched. Actual dedupes them on `imported_id`.
+
+The exception is an account's first sync. If setup found existing transactions in the paired Actual account, it records that date as `backfillFrom` in `data/config.json` and the first sync starts there exactly, with no lookback overlap - see [Migrating from another tool](#migrating-from-another-tool). An account with no history at all falls back to `SYNC_DAYS_LOOKBACK`.
+
+### Migrating from another tool
+
+If you have imported history into Actual from somewhere else, pair the account **after** that import. Setup reads the newest transaction in each Actual account and offers it as the first-sync start date, so there is no gap between where the old tool stopped and where this one starts. Press Enter to accept, type a different `YYYY-MM-DD`, or `n` to use the plain lookback instead.
+
+Actual cannot dedupe against migrated rows on its own. Its fuzzy matcher only considers existing rows where `imported_id` is null, and most migration paths stamp their own id (YNAB writes `YNAB:<amount>:<date>:<n>`), so a re-fetched transaction lands as a duplicate however well it matches. This tool therefore runs its own guard before every import: any incoming transaction with the same date and amount as an existing row that it did not import is skipped, and logged as `Skipped N transaction(s) already present in Actual`. Each existing row is consumed once, so two genuine same-day payments of the same value still import as two.
+
+The same guard covers TrueLayer reissuing a `transaction_id` for something already synced, which would otherwise sail past the id match.
+
+Deletions stick, too - imports run with `reimportDeleted: false`, so a transaction you delete in Actual is not resurrected on the next sync.
+
+Two things worth knowing before the first sync:
+
+- Run it soon after `npm run setup`. Unattended access to more than 90 days of history depends on a fresh consent.
+- How far back TrueLayer will go is the bank's call, usually 12-24 months. Ask for more and you simply get less, without an error.
 
 ## Docker
 
@@ -147,10 +176,12 @@ The container starts, syncs once, and exits. Scheduling is handled externally �
 2. Run as: `root` (or a docker-capable user)
 3. Schedule: daily at 06:00 (or your preferred time)
 4. Script:
+
    ```bash
    docker compose -f /volume1/docker/truelayer2actual/docker-compose.yml \
      run --rm truelayer2actual
    ```
+
 5. Enable **"Send run details by email"** and **"Send only when script terminates abnormally"**
 
 ### Option B: Built-in loop (`SYNC_INTERVAL_HOURS=6`)
@@ -173,13 +204,18 @@ services:
 TrueLayer provides a sandbox environment with a mock bank that returns predictable test data — no real bank credentials needed.
 
 1. Create a sandbox app at [console.truelayer.com](https://console.truelayer.com)
-2. Set `TRUELAYER_CLIENT_ID=sandbox-<your-id>` in `.env` — the `sandbox-` prefix is detected automatically and switches all API calls to sandbox endpoints
-3. Run `npm run setup` and authenticate with **Mock Bank**
+2. Set `TRUELAYER_CLIENT_ID=sandbox-<your-id>` in `.env` - the `sandbox-` prefix is detected automatically and switches all API calls to sandbox endpoints
+3. Register your redirect URI in the console under the sandbox app's **Allowed redirect URIs**, byte for byte - `http://localhost:3000/callback` if you are running setup on your machine. TrueLayer matches on scheme, host, port and path, so a missing `/callback` or a different port fails the exchange
+4. Run `npm run setup` and authenticate with **Mock Bank**, username `john`, password `doe`
+
+Sandbox only has the Mock Bank provider (`uk-cs-mock`) available; the live provider groups (`uk-ob-all`, `uk-oauth-all`) are not valid there. Setup picks the right filter per environment - mixing live ids into a sandbox auth link invalidates the whole filter and the login page sits on "Connecting" forever.
+
+The redirect URI is only used by the browser on the machine running setup; it has nothing to do with Docker networking. If you run setup inside the container instead, publish the port (`-p 3000:3000`) so `localhost:3000` still reaches it.
 
 ## npm scripts
 
 | Script | Description |
-|---|---|
+| --- | --- |
 | `npm run setup` | One-time OAuth + account pairing |
 | `npm run sync` | Sync transactions (one-shot or loop) |
 | `npm run build` | Compile TypeScript to `dist/` |

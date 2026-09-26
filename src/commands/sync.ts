@@ -15,8 +15,10 @@ import {
   shutdownActual,
   importToActual,
   getActualAccountBalance,
+  getActualTransactions,
 } from '../clients/actual.js';
 import { mapTransaction } from '../mapper.js';
+import { dropAlreadyPresent } from '../dedupe.js';
 import { logger } from '../logger.js';
 import type { Account } from '../config.js';
 
@@ -117,13 +119,24 @@ async function main(): Promise<void> {
 
       const lookback = Number(process.env.SYNC_DAYS_LOOKBACK ?? '7');
       const to = today();
-      const lastSyncDate = account.lastSyncedAt
-        ? account.lastSyncedAt.split('T')[0]
-        : daysAgo(lookback);
-      // Always look back at least `lookback` days so transactions that were pending
-      // at last sync but have since settled are not missed.
-      const floor = daysAgo(lookback);
-      const from = lastSyncDate < floor ? lastSyncDate : floor;
+      let from: string;
+
+      if (account.backfillFrom) {
+        // Seeded at setup from the newest transaction already in Actual. Nothing
+        // was pending at that point, so take the date exactly rather than
+        // widening the window out over migrated history.
+        from = account.backfillFrom;
+      } else if (account.lastSyncedAt) {
+        const lastSyncDate = account.lastSyncedAt.split('T')[0];
+        // Steady state: always look back at least `lookback` days so transactions
+        // that were pending at last sync but have since settled are not missed.
+        const floor = daysAgo(lookback);
+        from = lastSyncDate < floor ? lastSyncDate : floor;
+      } else {
+        // No watermark and nothing to backfill — a genuinely empty Actual
+        // account, so fall back to the generic lookback window.
+        from = daysAgo(lookback);
+      }
 
       logger.info(`[${account.name}] Syncing from ${from} to ${to}...`);
 
@@ -134,7 +147,22 @@ async function main(): Promise<void> {
 
       const isCard = account.accountKind === 'card';
       const mapped = txns.map((t) => mapTransaction(t, isCard));
-      const result = await importToActual(account.actualAccountId, mapped);
+
+      // Guard the window against rows Actual cannot dedupe itself — migrated
+      // transactions carrying another tool's imported_id, or ones we synced
+      // before TrueLayer reissued the transaction_id.
+      const existing = await getActualTransactions(account.actualAccountId, from, to);
+      const { keep, skipped } = dropAlreadyPresent(mapped, existing);
+      if (skipped.length > 0) {
+        logger.info(
+          `[${account.name}] Skipped ${skipped.length} transaction(s) already present in Actual`
+        );
+        skipped.forEach((t) =>
+          logger.debug(`[${account.name}] Skipped ${t.date} ${t.amount}p ${t.payee_name ?? ''}`)
+        );
+      }
+
+      const result = await importToActual(account.actualAccountId, keep);
 
       logger.info(`[${account.name}] +${result.added.length} added, ${result.updated.length} updated`);
 
@@ -144,6 +172,8 @@ async function main(): Promise<void> {
 
       await validateBalance(accessToken, account);
       account.lastSyncedAt = new Date().toISOString();
+      // The backfill has landed; every run from here is a normal incremental sync.
+      delete account.backfillFrom;
     }
   } finally {
     await shutdownActual();
